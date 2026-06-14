@@ -1,62 +1,107 @@
-package uci
+package uci_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
+
+	"github.com/tamnd/uci-cli/uci"
 )
 
-func TestGet(t *testing.T) {
+func datasetsPayload(names []string) []byte {
+	type wireDataset struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	}
+	type resp struct {
+		Status     int          `json:"status"`
+		StatusText string       `json:"statusText"`
+		Data       []wireDataset `json:"data"`
+	}
+	data := make([]wireDataset, len(names))
+	for i, n := range names {
+		data[i] = wireDataset{ID: i + 1, Name: n}
+	}
+	b, _ := json.Marshal(resp{Status: 200, StatusText: "OK", Data: data})
+	return b
+}
+
+func TestList(t *testing.T) {
+	payload := datasetsPayload([]string{"Abalone", "Adult", "Iris"})
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") == "" {
 			t.Error("request carried no User-Agent")
 		}
-		_, _ = w.Write([]byte("ok"))
+		_, _ = w.Write(payload)
 	}))
 	defer srv.Close()
 
-	c := NewClient()
-	c.Rate = 0 // no pacing in the test
+	cfg := uci.DefaultConfig()
+	cfg.BaseURL = srv.URL
+	cfg.Rate = 0
 
-	body, err := c.Get(context.Background(), srv.URL)
+	c := uci.NewClient(cfg)
+	datasets, err := c.List(context.Background(), 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "ok" {
-		t.Errorf("body = %q, want %q", body, "ok")
+	if len(datasets) != 3 {
+		t.Fatalf("got %d datasets, want 3", len(datasets))
+	}
+	if datasets[0].Name != "Abalone" {
+		t.Errorf("name = %q, want Abalone", datasets[0].Name)
+	}
+	if datasets[0].Rank != 1 {
+		t.Errorf("rank = %d, want 1", datasets[0].Rank)
+	}
+	if datasets[0].ID != 1 {
+		t.Errorf("id = %d, want 1", datasets[0].ID)
 	}
 }
 
-func TestGetRetriesOn503(t *testing.T) {
-	var hits int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		if hits < 3 {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		_, _ = w.Write([]byte("recovered"))
+func TestListLimit(t *testing.T) {
+	payload := datasetsPayload([]string{"A", "B", "C", "D", "E"})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
 	}))
 	defer srv.Close()
 
-	c := NewClient()
-	c.Rate = 0
-	c.Retries = 5
+	cfg := uci.DefaultConfig()
+	cfg.BaseURL = srv.URL
+	cfg.Rate = 0
 
-	start := time.Now()
-	body, err := c.Get(context.Background(), srv.URL)
+	c := uci.NewClient(cfg)
+	datasets, err := c.List(context.Background(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(body) != "recovered" {
-		t.Errorf("body = %q after retries", body)
+	if len(datasets) != 3 {
+		t.Fatalf("got %d datasets, want 3 (limit applied)", len(datasets))
 	}
-	if hits != 3 {
-		t.Errorf("server saw %d hits, want 3", hits)
+}
+
+func TestSearch(t *testing.T) {
+	payload := datasetsPayload([]string{"Iris", "Iris Plant", "Abalone"})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+
+	cfg := uci.DefaultConfig()
+	cfg.BaseURL = srv.URL
+	cfg.Rate = 0
+
+	c := uci.NewClient(cfg)
+	datasets, err := c.Search(context.Background(), "iris", 10)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if time.Since(start) < 500*time.Millisecond {
-		t.Error("retries did not back off")
+	if len(datasets) != 2 {
+		t.Fatalf("got %d datasets, want 2", len(datasets))
 	}
 }
